@@ -52,32 +52,111 @@ function setStoredItems<T>(key: string, data: T): void {
 // API Abstraction Service
 export const api = {
   // --- COMPLAINTS API ---
+  
+  
   async getComplaints(filters?: ComplaintFilters): Promise<Complaint[]> {
-    if (API_BASE_URL && false) {
-      // Prepared for real backend fetch
-      const res = await fetch(`${API_BASE_URL}/api/complaints`);
-      return res.json();
+    const response = await fetch('/api/complaints', {
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to load complaints from the database.');
     }
 
-    // Local Mock Implementation with persistence
-    let complaints: Complaint[] = getStoredItems(STORAGE_KEY_COMPLAINTS, MOCK_COMPLAINTS);
-    if (!complaints || complaints.length === 0) {
-      complaints = [...MOCK_COMPLAINTS];
-      setStoredItems(STORAGE_KEY_COMPLAINTS, complaints);
-    }
+    const result = await response.json();
+
+    const complaints: Complaint[] = result.complaints.map(
+      (item: {
+        id: string | number;
+        public_id: string;
+        title: string;
+        description: string;
+        status: ComplaintStatus;
+        severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+        priority_score: number | string;
+        created_at: string;
+        updated_at: string;
+        category_id: string | number;
+        category_name: string;
+        location_id: string | number;
+        building: string;
+        floor: string | null;
+        room: string | null;
+        submitted_by_id: string | number;
+        submitted_by_name: string;
+        submitted_by_email: string;
+        department_name: string | null;
+        assigned_department_id: string | number | null;
+        assigned_staff_id: string | number | null;
+        assigned_staff_name: string | null;
+      }) => {
+        const score = Number(item.priority_score);
+
+        const priorityLevel =
+          score >= 80
+            ? 'CRITICAL'
+            : score >= 60
+              ? 'HIGH'
+              : score >= 40
+                ? 'MEDIUM'
+                : 'LOW';
+
+        return {
+          id: String(item.id),
+          complaintNumber: `CMP-${item.id}`,
+          title: item.title,
+          categoryId: String(item.category_id),
+          categoryName: item.category_name,
+          locationId: String(item.location_id),
+          locationName: [
+            item.building,
+            item.floor,
+            item.room,
+          ]
+            .filter(Boolean)
+            .join(' - '),
+          roomDetails: item.room || '',
+          severity: item.severity,
+          priorityScore: score,
+          priorityLevel,
+          status: item.status,
+          description: item.description,
+          submittedBy: {
+            id: String(item.submitted_by_id),
+            name: item.submitted_by_name || 'Campus user',
+            email: item.submitted_by_email || '',
+          },
+          assignedDepartmentName: item.department_name || undefined,
+          assignedDepartmentId:
+            item.assigned_department_id != null
+              ? String(item.assigned_department_id)
+              : undefined,
+          assignedStaffId:
+            item.assigned_staff_id != null
+              ? String(item.assigned_staff_id)
+              : undefined,
+          assignedStaffName: item.assigned_staff_name ?? undefined,
+          createdDate: item.created_at,
+          updatedDate: item.updated_at,
+          timeline: [],
+        };
+      },
+    );
 
     if (!filters) return complaints;
 
-    return complaints.filter((item) => {
+    let filtered = complaints.filter((item) => {
       if (filters.search) {
         const query = filters.search.toLowerCase();
-        const matchesQuery =
-          item.complaintNumber.toLowerCase().includes(query) ||
-          item.title.toLowerCase().includes(query) ||
-          item.locationName.toLowerCase().includes(query) ||
-          item.categoryName.toLowerCase().includes(query) ||
-          item.description.toLowerCase().includes(query);
-        if (!matchesQuery) return false;
+        const searchable = [
+          item.complaintNumber,
+          item.title,
+          item.locationName,
+          item.categoryName,
+          item.description,
+        ].join(' ').toLowerCase();
+
+        if (!searchable.includes(query)) return false;
       }
 
       if (filters.status && filters.status !== 'ALL') {
@@ -89,28 +168,48 @@ export const api = {
       }
 
       if (filters.category && filters.category !== 'ALL') {
-        if (item.categoryId !== filters.category && item.categoryName !== filters.category) return false;
+        if (
+          item.categoryId !== filters.category &&
+          item.categoryName !== filters.category
+        ) {
+          return false;
+        }
       }
 
       if (filters.location && filters.location !== 'ALL') {
-        if (item.locationId !== filters.location && item.locationName !== filters.location) return false;
+        if (
+          item.locationId !== filters.location &&
+          item.locationName !== filters.location
+        ) {
+          return false;
+        }
       }
 
       return true;
-    }).sort((a, b) => {
+    });
+
+    filtered = filtered.sort((a, b) => {
       if (filters.sortBy === 'OLDEST') {
-        return new Date(a.createdDate).getTime() - new Date(b.createdDate).getTime();
+        return new Date(a.createdDate).getTime() -
+          new Date(b.createdDate).getTime();
       }
+
       if (filters.sortBy === 'PRIORITY_HIGH') {
         return b.priorityScore - a.priorityScore;
       }
+
       if (filters.sortBy === 'PRIORITY_LOW') {
         return a.priorityScore - b.priorityScore;
       }
-      // Default: NEWEST
-      return new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime();
+
+      return new Date(b.createdDate).getTime() -
+        new Date(a.createdDate).getTime();
     });
+
+    return filtered;
   },
+
+
 
   async getComplaintById(id: string): Promise<Complaint | null> {
     const complaints = await this.getComplaints();
@@ -120,6 +219,7 @@ export const api = {
     return found || null;
   },
 
+  
   async createComplaint(data: {
     title: string;
     categoryId: string;
@@ -129,213 +229,432 @@ export const api = {
     description: string;
     contactPreference?: string;
     additionalNotes?: string;
-    submittedBy: { id: string; name: string; email: string; phone?: string };
+    submittedBy: {
+      id: string;
+      name: string;
+      email: string;
+      phone?: string;
+    };
     imageEvidenceUrl?: string;
   }): Promise<Complaint> {
-    const complaints = await this.getComplaints();
     const categories = await this.getCategories();
     const locations = await this.getLocations();
 
-    const categoryObj = categories.find((c) => c.id === data.categoryId);
-    const locationObj = locations.find((l) => l.id === data.locationId);
+    const category = categories.find(
+      (item) => item.id === data.categoryId,
+    );
+    const location = locations.find(
+      (item) => item.id === data.locationId,
+    );
 
-    const categoryName = categoryObj ? categoryObj.name : 'General Issue';
-    const locationName = locationObj ? locationObj.name : 'Main Campus';
+    if (!category || !location) {
+      throw new Error('Please select a valid category and location.');
+    }
 
-    // Calculate priority score according to category, severity, location
-    const { score, level } = calculatePriorityScore(data.severity, locationName, categoryName);
+    // Temporary local-demo mapping. Replace with real authentication later.
+    const parsedUserId = Number(data.submittedBy.id);
+    const submittedBy =
+      Number.isInteger(parsedUserId) && parsedUserId > 0
+        ? parsedUserId
+        : 1;
 
-    const newNumberIndex = 1025 + complaints.length;
-    const newId = `cmp-${newNumberIndex}`;
-    const newNumber = `CMP-${newNumberIndex}`;
+    const response = await fetch('/api/complaints', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        title: data.title,
+        description: data.description,
+        categoryId: Number(data.categoryId),
+        locationId: Number(data.locationId),
+        submittedBy,
+        severity: data.severity,
+        safetyRisk: false,
+        affectsMultiplePeople: false,
+        recurring: false,
+        roomDetails: data.roomDetails,
+        contactPreference: data.contactPreference,
+        additionalNotes: data.additionalNotes,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || 'Failed to submit the complaint.',
+      );
+    }
+
+    const saved = result.complaint;
+    const score = Number(saved.priority_score);
+    const priorityLevel =
+      score >= 80
+        ? 'CRITICAL'
+        : score >= 60
+          ? 'HIGH'
+          : score >= 40
+            ? 'MEDIUM'
+            : 'LOW';
+
+    const now = new Date().toISOString();
+    const complaintId = String(saved.id);
+    const complaintNumber = `CMP-${saved.id}`;
 
     const newComplaint: Complaint = {
-      id: newId,
-      complaintNumber: newNumber,
-      title: data.title,
+      id: complaintId,
+      complaintNumber,
+      title: saved.title,
       categoryId: data.categoryId,
-      categoryName: categoryName,
+      categoryName: category.name,
       locationId: data.locationId,
-      locationName: locationName,
+      locationName: location.name,
       roomDetails: data.roomDetails,
-      severity: data.severity,
+      severity: saved.severity,
       priorityScore: score,
-      priorityLevel: level,
-      status: 'SUBMITTED',
-      description: data.description,
+      priorityLevel,
+      status: saved.status,
+      description: saved.description,
       contactPreference: data.contactPreference,
       additionalNotes: data.additionalNotes,
       submittedBy: data.submittedBy,
-      createdDate: new Date().toISOString(),
-      updatedDate: new Date().toISOString(),
-      imageEvidenceUrl: data.imageEvidenceUrl || 'https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=600',
+      createdDate: saved.created_at || now,
+      updatedDate: saved.created_at || now,
+      imageEvidenceUrl: data.imageEvidenceUrl,
       timeline: [
         {
-          id: `t-${Date.now()}`,
+          id: `t-${complaintId}`,
           status: 'SUBMITTED',
           title: 'Complaint Submitted',
-          description: `Complaint registered. Backend priority engine assigned initial score of ${score}/100 (${level}).`,
-          timestamp: new Date().toISOString(),
+          description: `Complaint registered with priority score ${score}/100.`,
+          timestamp: saved.created_at || now,
           performedBy: data.submittedBy.name,
           userRole: 'STUDENT',
         },
       ],
     };
 
-    const updated = [newComplaint, ...complaints];
-    setStoredItems(STORAGE_KEY_COMPLAINTS, updated);
-
-    // Push notification for Admin & Staff
-    const notifs = getStoredItems(STORAGE_KEY_NOTIFS, MOCK_NOTIFICATIONS);
-    const newNotif: NotificationItem = {
-      id: `notif-${Date.now()}`,
-      title: level === 'CRITICAL' ? 'Critical Complaint Submitted' : 'New Complaint Submitted',
-      message: `${newNumber}: "${data.title}" reported in ${locationName}. Score: ${score}.`,
-      type: level === 'CRITICAL' ? 'CRITICAL' : 'STATUS_CHANGE',
-      read: false,
-      timestamp: 'Just now',
-      complaintId: newId,
-    };
-    setStoredItems(STORAGE_KEY_NOTIFS, [newNotif, ...notifs]);
-
     return newComplaint;
   },
 
-  async updateComplaintStatus(
-    id: string,
-    status: ComplaintStatus,
-    notes?: string,
-    userRole: 'STUDENT' | 'STAFF' | 'ADMIN' = 'ADMIN',
-    userName: string = 'Campus Admin'
-  ): Promise<Complaint> {
-    const complaints = await this.getComplaints();
-    const index = complaints.findIndex((c) => c.id === id || c.complaintNumber === id);
-    if (index === -1) throw new Error('Complaint not found');
 
-    const item = complaints[index];
-    item.status = status;
-    item.updatedDate = new Date().toISOString();
+  
+async updateComplaintStatus(
+  id: string,
+  status: ComplaintStatus,
+  notes?: string,
+  userRole: 'STUDENT' | 'STAFF' | 'ADMIN' = 'ADMIN',
+  userName: string = 'Campus Admin'
+): Promise<Complaint> {
+  const complaints = await this.getComplaints();
+  const item = complaints.find(
+    (c) => c.id === id || c.complaintNumber === id
+  );
 
-    let eventTitle = `Status updated to ${status}`;
-    if (status === 'REVIEWED') eventTitle = 'Admin Priority Reviewed';
-    if (status === 'ASSIGNED') eventTitle = 'Department & Staff Assigned';
-    if (status === 'IN_PROGRESS') eventTitle = 'Work Started by Technician';
-    if (status === 'RESOLVED') eventTitle = 'Issue Marked as Resolved';
+  if (!item) {
+    throw new Error('Complaint not found');
+  }
 
-    item.timeline.push({
-      id: `t-${Date.now()}`,
+  const changedBy = Number(
+    item.submittedBy?.id
+  );
+
+  const response = await fetch('/api/complaints/status', {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      complaintId: Number(item.id),
       status,
-      title: eventTitle,
-      description: notes || `Complaint status updated to ${status}.`,
-      timestamp: new Date().toISOString(),
-      performedBy: userName,
-      userRole,
-    });
+      changedBy,
+      notes: notes || `Status updated to ${status} by ${userName} (${userRole}).`,
+    }),
+  });
 
-    complaints[index] = item;
-    setStoredItems(STORAGE_KEY_COMPLAINTS, complaints);
-    return item;
-  },
+  const result = await response.json().catch(() => ({}));
 
-  async assignComplaint(
-    id: string,
-    departmentId: string,
-    staffId?: string,
-    adminName: string = 'Dr. Vikram Singh'
-  ): Promise<Complaint> {
-    const complaints = await this.getComplaints();
-    const departments = await this.getDepartments();
-    const staffList = await this.getStaff();
+  if (!response.ok) {
+    throw new Error(result.error || 'Failed to update complaint status');
+  }
 
-    const index = complaints.findIndex((c) => c.id === id || c.complaintNumber === id);
-    if (index === -1) throw new Error('Complaint not found');
+  // Reload from PostgreSQL so the UI reflects the saved status.
+  const updatedComplaints = await this.getComplaints();
+  const updatedItem = updatedComplaints.find(
+    (c) => c.id === item.id || c.complaintNumber === id
+  );
 
-    const deptObj = departments.find((d) => d.id === departmentId);
-    const staffObj = staffList.find((s) => s.id === staffId);
+  if (!updatedItem) {
+    throw new Error('Status was saved, but the updated complaint could not be reloaded');
+  }
 
-    const item = complaints[index];
-    item.assignedDepartmentId = departmentId;
-    item.assignedDepartmentName = deptObj ? deptObj.name : 'Maintenance Dept';
-    if (staffObj) {
-      item.assignedStaffId = staffObj.id;
-      item.assignedStaffName = staffObj.name;
-    }
-    item.assignedDate = new Date().toISOString();
-    item.status = 'ASSIGNED';
-    item.updatedDate = new Date().toISOString();
+  return updatedItem;
+},
 
-    item.timeline.push({
-      id: `t-${Date.now()}`,
-      status: 'ASSIGNED',
-      title: 'Assigned to Staff',
-      description: `Assigned to ${deptObj ? deptObj.name : 'Department'}${staffObj ? ` (${staffObj.name})` : ''}.`,
-      timestamp: new Date().toISOString(),
-      performedBy: adminName,
-      userRole: 'ADMIN',
-    });
 
-    complaints[index] = item;
-    setStoredItems(STORAGE_KEY_COMPLAINTS, complaints);
-    return item;
-  },
+  
+async assignComplaint(
+  id: string,
+  departmentId: string,
+  staffId?: string,
+  adminName: string = 'Dr. Vikram Singh'
+): Promise<Complaint> {
+  const complaints = await this.getComplaints();
 
-  async resolveComplaint(
-    id: string,
-    resolutionData: {
-      description: string;
-      actualCost?: number;
-      notes?: string;
-      staffName: string;
-      staffId: string;
-    }
-  ): Promise<Complaint> {
-    const complaints = await this.getComplaints();
-    const index = complaints.findIndex((c) => c.id === id || c.complaintNumber === id);
-    if (index === -1) throw new Error('Complaint not found');
+  const item = complaints.find(
+    (c) => c.id === id || c.complaintNumber === id
+  );
 
-    const item = complaints[index];
-    item.status = 'RESOLVED';
-    item.updatedDate = new Date().toISOString();
-    item.resolution = {
+  if (!item) {
+    throw new Error('Complaint not found');
+  }
+
+  const response = await fetch('/api/complaints/assign', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      complaintId: Number(item.id),
+      departmentId: Number(departmentId),
+      assignedBy: 1,
+      ...(staffId ? { staffId: Number(staffId) } : {}),
+    }),
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(result.error || 'Failed to assign complaint');
+  }
+
+  // Reload the saved assignment from PostgreSQL.
+  const updatedComplaints = await this.getComplaints();
+
+  const updatedItem = updatedComplaints.find(
+    (c) => c.id === item.id || c.complaintNumber === id
+  );
+
+  if (!updatedItem) {
+    throw new Error(
+      'Assignment was saved, but the updated complaint could not be reloaded'
+    );
+  }
+
+  return updatedItem;
+},
+
+
+  
+async resolveComplaint(
+  id: string,
+  resolutionData: {
+    description: string;
+    actualCost?: number;
+    notes?: string;
+    staffName: string;
+    staffId: string;
+  }
+): Promise<Complaint> {
+  const complaints = await this.getComplaints();
+
+  const item = complaints.find(
+    (c) => c.id === id || c.complaintNumber === id
+  );
+
+  if (!item) {
+    throw new Error('Complaint not found');
+  }
+
+  const response = await fetch('/api/complaints/resolve', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      complaintId: Number(item.id),
+      staffId: Number(resolutionData.staffId),
+      description: resolutionData.description,
+      actualCost: resolutionData.actualCost,
+      notes: resolutionData.notes,
+    }),
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(result.error || 'Failed to resolve complaint');
+  }
+
+  // Reload the saved complaint from PostgreSQL.
+  const updatedComplaints = await this.getComplaints();
+
+  const updatedItem = updatedComplaints.find(
+    (c) => c.id === item.id || c.complaintNumber === id
+  );
+
+  if (!updatedItem) {
+    throw new Error(
+      'Resolution was saved, but the updated complaint could not be reloaded'
+    );
+  }
+
+  return {
+    ...updatedItem,
+    resolution: {
       description: resolutionData.description,
       resolvedBy: resolutionData.staffName,
       resolvedById: resolutionData.staffId,
       resolvedDate: new Date().toISOString(),
       actualCost: resolutionData.actualCost,
       notes: resolutionData.notes,
-    };
+    },
+  };
+},
 
-    item.timeline.push({
-      id: `t-${Date.now()}`,
-      status: 'RESOLVED',
-      title: 'Work Completed & Resolved',
-      description: resolutionData.description,
-      timestamp: new Date().toISOString(),
-      performedBy: resolutionData.staffName,
-      userRole: 'STAFF',
-    });
 
-    complaints[index] = item;
-    setStoredItems(STORAGE_KEY_COMPLAINTS, complaints);
-    return item;
-  },
-
+  
   // --- DEPARTMENTS & STAFF ---
-  async getDepartments(): Promise<Department[]> {
-    return MOCK_DEPARTMENTS;
-  },
+  
+async getDepartments(): Promise<Department[]> {
+  const response = await fetch('/api/reference');
+
+  if (!response.ok) {
+    throw new Error('Failed to load departments.');
+  }
+
+  const data = await response.json();
+
+  return data.departments.map(
+    (department: {
+      id: string | number;
+      name: string;
+      description?: string | null;
+      code?: string | null;
+      head_name?: string | null;
+      email?: string | null;
+      active_complaints?: number | null;
+    }): Department => ({
+      id: String(department.id),
+      name: department.name,
+      code: department.code ?? `DEPT-${department.id}`,
+      headName: department.head_name ?? 'Not assigned',
+      email: department.email ?? '',
+      activeComplaints: Number(department.active_complaints ?? 0),
+    })
+  );
+},
+
 
   async getStaff(): Promise<StaffMember[]> {
-    return MOCK_STAFF;
+    const response = await fetch('/api/reference');
+
+    if (!response.ok) {
+      throw new Error('Failed to load staff.');
+    }
+
+    const data = await response.json();
+
+    return data.staff.map(
+      (staff: {
+        id: string | number;
+        full_name: string;
+        email: string;
+        department_id?: string | number | null;
+        department_name?: string | null;
+        role: 'STAFF' | 'ADMIN';
+      }) => ({
+        id: String(staff.id),
+        name: staff.full_name,
+        email: staff.email,
+        departmentId: staff.department_id
+          ? String(staff.department_id)
+          : '',
+        departmentName: staff.department_name ?? '',
+        role: staff.role,
+      }),
+    );
   },
 
+  
   async getLocations(): Promise<CampusLocation[]> {
-    return MOCK_LOCATIONS;
+    const response = await fetch('/api/reference');
+
+    if (!response.ok) {
+      throw new Error('Failed to load campus locations.');
+    }
+
+    const data = await response.json();
+
+    return data.locations.map(
+      (location: {
+        id: string | number;
+        building: string;
+        floor: string | null;
+        room: string | null;
+        description: string;
+      }) => ({
+        id: String(location.id),
+        name: [
+          location.building,
+          location.floor,
+          location.room,
+        ]
+          .filter(Boolean)
+          .join(' - '),
+        code: `LOC-${location.id}`,
+        building: location.building,
+        totalComplaints: 0,
+      }),
+    );
   },
 
-  async getCategories(): Promise<ComplaintCategory[]> {
-    return MOCK_CATEGORIES;
-  },
+  
+async getCategories(): Promise<ComplaintCategory[]> {
+  const response = await fetch('/api/reference');
+
+  if (!response.ok) {
+    throw new Error('Failed to load complaint categories.');
+  }
+
+  const data = await response.json();
+
+  const departments: Department[] = data.departments.map(
+    (department: {
+      id: string | number;
+      name: string;
+      description?: string | null;
+    }) => ({
+      id: String(department.id),
+      name: department.name,
+      code: `DEPT-${department.id}`,
+      headName: 'Not assigned',
+      email: '',
+      activeComplaints: 0,
+    })
+  );
+
+  return data.categories.map(
+    (category: {
+      id: string | number;
+      name: string;
+      department_name: string;
+    }) => ({
+      id: String(category.id),
+      name: category.name,
+      description: `Report issues related to ${category.name.toLowerCase()}.`,
+      iconName: 'Wrench',
+      defaultDepartmentId:
+        departments.find(
+          (department) =>
+            department.name === category.department_name
+        )?.id ?? '',
+    })
+  );
+},
+
+
 
   // --- ANALYTICS & PRIORITY QUEUE ---
   async getAnalytics(): Promise<AnalyticsData> {
