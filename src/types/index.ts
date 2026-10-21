@@ -60,6 +60,10 @@ export interface ComplaintCategory {
   description: string;
   iconName: string;
   defaultDepartmentId: string;
+  assignedDepartmentId?: string;
+  assignedDepartmentName?: string;
+  assignedStaffId?: string;
+  assignedStaffName?: string;
 }
 
 export interface TimelineEvent {
